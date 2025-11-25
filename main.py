@@ -57,19 +57,24 @@ def rag_answer(query):
         return False, "⚠️ Please upload and process a PDF first."
 
     try:
-        docs = st.session_state.retriever.get_relevant_documents(query)
-        if len(docs) == 0:
+        retriever = st.session_state.retriever
+
+        # The ONLY reliable API for your retriever
+        docs = retriever.invoke(query)
+
+        if docs is None or len(docs) == 0:
             return False, "⚠️ No relevant content found in the PDF."
 
         context = "\n\n".join([d.page_content for d in docs])
 
         prompt = f"Use ONLY this context:\n{context}\n\nQuestion: {query}\nAnswer:"
+
         response = chat_model.invoke(prompt)
 
         return True, response.content
 
     except Exception as e:
-        return False, f"❌ Error generating answer: {str(e)}"
+        return False, f"❌ Error generating answer: {type(e).__name__}: {str(e)}"
 
 
 # ------------------ UI ------------------
