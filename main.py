@@ -7,25 +7,43 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
 
+# Load environment variables
 load_dotenv()
+
+# ------------------------------
+# READ HF TOKEN FROM STREAMLIT SECRETS
+# ------------------------------
+HF_TOKEN = st.secrets["HF_TOKEN"]
 
 st.set_page_config(page_title="PDF RAG App", layout="wide")
 st.title("📘 AI PDF Question Answering (RAG)")
 st.write("Upload a PDF and ask questions based on its content.")
 
-# Initialize session variables ONLY once
+# Initialize session storage
 if "vectordb" not in st.session_state:
     st.session_state.vectordb = None
+
 if "retriever" not in st.session_state:
     st.session_state.retriever = None
 
-# Embedding + LLM
+
+# ------------------------------
+# EMBEDDING & LLM MODELS
+# ------------------------------
 embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-llm = HuggingFaceEndpoint(repo_id="HuggingFaceH4/zephyr-7b-beta", temperature=0.5)
+
+llm = HuggingFaceEndpoint(
+    repo_id="HuggingFaceH4/zephyr-7b-beta",
+    temperature=0.5,
+    huggingfacehub_api_token=HF_TOKEN   # REQUIRED
+)
+
 chat_model = ChatHuggingFace(llm=llm)
 
 
-# ------------------ Load PDF Function ------------------
+# ------------------------------
+# PROCESS PDF FUNCTION
+# ------------------------------
 def process_pdf(uploaded_file):
     if uploaded_file is None:
         return False, "⚠️ Please upload a PDF."
@@ -41,33 +59,35 @@ def process_pdf(uploaded_file):
         splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
         chunks = splitter.split_documents(docs)
 
-        # Store inside session_state
         st.session_state.vectordb = FAISS.from_documents(chunks, embedding)
         st.session_state.retriever = st.session_state.vectordb.as_retriever()
 
         return True, f"✅ PDF processed successfully! {len(chunks)} chunks created."
 
     except Exception as e:
-        return False, f"❌ Error: {str(e)}"
+        return False, f"❌ Error processing PDF: {str(e)}"
 
 
-# ------------------ RAG Answer Function ------------------
+# ------------------------------
+# RAG ANSWER FUNCTION
+# ------------------------------
 def rag_answer(query):
     if st.session_state.retriever is None:
         return False, "⚠️ Please upload and process a PDF first."
 
     try:
-        retriever = st.session_state.retriever
+        docs = st.session_state.retriever.invoke(query)
 
-        # The ONLY reliable API for your retriever
-        docs = retriever.invoke(query)
-
-        if docs is None or len(docs) == 0:
-            return False, "⚠️ No relevant content found in the PDF."
+        if not docs:
+            return False, "⚠️ No matching content found."
 
         context = "\n\n".join([d.page_content for d in docs])
 
-        prompt = f"Use ONLY this context:\n{context}\n\nQuestion: {query}\nAnswer:"
+        prompt = (
+            "Use ONLY the context below to answer the question.\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"QUESTION: {query}\n\nANSWER:"
+        )
 
         response = chat_model.invoke(prompt)
 
@@ -77,30 +97,27 @@ def rag_answer(query):
         return False, f"❌ Error generating answer: {type(e).__name__}: {str(e)}"
 
 
-# ------------------ UI ------------------
-
+# ------------------------------
+# STREAMLIT UI
+# ------------------------------
 uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
 
 if st.button("Process PDF"):
     success, msg = process_pdf(uploaded_pdf)
-    if success:
-        st.success(msg)
-    else:
-        st.error(msg)
+    st.success(msg) if success else st.error(msg)
 
 st.divider()
 
 user_query = st.text_input("Ask a question:")
 
 if st.button("Get Answer"):
-    if user_query.strip() == "":
+    if not user_query.strip():
         st.warning("Please enter a question.")
     else:
-        with st.spinner("Generating answer..."):
-            success, response = rag_answer(user_query)
+        with st.spinner("Thinking..."):
+            success, answer = rag_answer(user_query)
 
         if success:
-            st.text_area("Answer:", response, height=300)
+            st.text_area("Answer:", answer, height=300)
         else:
-            st.error(response)
-
+            st.error(answer)
