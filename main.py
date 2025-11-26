@@ -1,41 +1,38 @@
-import os
 import streamlit as st
-from dotenv import load_dotenv
-
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
 
-# Load secrets
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+
+
 HF_TOKEN = st.secrets["HF_TOKEN"]
-HF_USERNAME = st.secrets["HF_USERNAME"]
 
 st.set_page_config(page_title="PDF RAG App", layout="wide")
 st.title("📘 AI PDF Question Answering (RAG)")
 st.write("Upload a PDF and ask questions based on its content.")
 
-# Initialize session variables
+# Session state
 if "vectordb" not in st.session_state:
     st.session_state.vectordb = None
 if "retriever" not in st.session_state:
     st.session_state.retriever = None
 
-# CPU embedding model (Streamlit-friendly)
-embedding = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/paraphrase-MiniLM-L3-v2"
+# Remote embedding model (No Torch, No GPU, No local load)
+embedding = HuggingFaceInferenceAPIEmbeddings(
+    api_key=HF_TOKEN,
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
-# LLM (HuggingFace inference)
+# LLM
 llm = HuggingFaceEndpoint(
     repo_id="HuggingFaceH4/zephyr-7b-beta",
     temperature=0.5,
-    huggingfacehub_api_token=HF_TOKEN,
+    huggingfacehub_api_token=HF_TOKEN
 )
-
 chat_model = ChatHuggingFace(llm=llm)
 
-# PDF processing
 def process_pdf(uploaded_file):
     if uploaded_file is None:
         return False, "⚠️ Please upload a PDF."
@@ -59,7 +56,6 @@ def process_pdf(uploaded_file):
     except Exception as e:
         return False, f"❌ Error: {str(e)}"
 
-# RAG querying
 def rag_answer(query):
     if st.session_state.retriever is None:
         return False, "⚠️ Please upload and process a PDF first."
@@ -72,15 +68,10 @@ def rag_answer(query):
 
         context = "\n\n".join([d.page_content for d in docs])
 
-        prompt = (
-            f"Use ONLY the context below to answer the question.\n\n"
-            f"CONTEXT:\n{context}\n\n"
-            f"QUESTION: {query}\n"
-            f"ANSWER:"
-        )
+        prompt = f"Use ONLY this context:\n{context}\n\nQuestion: {query}\nAnswer:"
 
-        response = chat_model.invoke(prompt)
-        return True, response.content
+        result = chat_model.invoke(prompt)
+        return True, result.content
 
     except Exception as e:
         return False, f"❌ Error generating answer: {type(e).__name__}: {str(e)}"
@@ -94,16 +85,16 @@ if st.button("Process PDF"):
 
 st.divider()
 
-user_query = st.text_input("Ask a question:")
+question = st.text_input("Ask a question:")
 
 if st.button("Get Answer"):
-    if user_query.strip() == "":
+    if not question.strip():
         st.warning("Please enter a question.")
     else:
         with st.spinner("Generating answer..."):
-            success, response = rag_answer(user_query)
+            success, answer = rag_answer(question)
 
         if success:
-            st.text_area("Answer:", response, height=300)
+            st.text_area("Answer:", answer, height=300)
         else:
-            st.error(response)
+            st.error(answer)
