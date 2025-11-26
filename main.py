@@ -104,7 +104,11 @@ uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
 
 if st.button("Process PDF"):
     success, msg = process_pdf(uploaded_pdf)
-    st.success(msg) if success else st.error(msg)
+
+    if success:
+        st.success(msg)
+    else:
+        st.error(msg)
 
 st.divider()
 
