@@ -1,100 +1,82 @@
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEndpoint
+import tempfile
 
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-
-
-HF_TOKEN = st.secrets["HF_TOKEN"]
-
-st.set_page_config(page_title="PDF RAG App", layout="wide")
-st.title("📘 AI PDF Question Answering (RAG)")
+st.title("📘 Simple One-File RAG App")
 st.write("Upload a PDF and ask questions based on its content.")
 
-# Session state
-if "vectordb" not in st.session_state:
-    st.session_state.vectordb = None
-if "retriever" not in st.session_state:
-    st.session_state.retriever = None
+# ------------------------ LLM ------------------------
+llm = HuggingFaceEndpoint(
+    repo_id="HuggingFaceH4/zephyr-7b-beta",
+    temperature=0.1,
+    max_new_tokens=256
+)
 
-# Remote embedding model (No Torch, No GPU, No local load)
-embedding = HuggingFaceInferenceAPIEmbeddings(
-    api_key=HF_TOKEN,
+# ------------------------ Embeddings ------------------------
+embedding_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
-# LLM
-llm = HuggingFaceEndpoint(
-    repo_id="HuggingFaceH4/zephyr-7b-beta",
-    temperature=0.5,
-    huggingfacehub_api_token=HF_TOKEN
-)
-chat_model = ChatHuggingFace(llm=llm)
+vector_db = None  # global state after upload
 
-def process_pdf(uploaded_file):
-    if uploaded_file is None:
-        return False, "⚠️ Please upload a PDF."
 
-    try:
-        pdf_path = "uploaded.pdf"
-        with open(pdf_path, "wb") as f:
-            f.write(uploaded_file.read())
+# ------------------------ PDF Upload ------------------------
+uploaded_pdf = st.file_uploader("Upload your PDF", type="pdf")
 
-        loader = PyPDFLoader(pdf_path)
-        docs = loader.load()
+if uploaded_pdf:
+    st.info("Processing PDF... Please wait.")
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-        chunks = splitter.split_documents(docs)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_pdf.read())
+        pdf_path = tmp.name
 
-        st.session_state.vectordb = FAISS.from_documents(chunks, embedding)
-        st.session_state.retriever = st.session_state.vectordb.as_retriever()
+    loader = PyPDFLoader(pdf_path)
+    pages = loader.load()
 
-        return True, f"✅ PDF processed successfully! {len(chunks)} chunks created."
+    # Split into chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500, chunk_overlap=50
+    )
+    chunks = text_splitter.split_documents(pages)
 
-    except Exception as e:
-        return False, f"❌ Error: {str(e)}"
+    # Create vector store
+    vector_db = FAISS.from_documents(chunks, embedding_model)
 
-def rag_answer(query):
-    if st.session_state.retriever is None:
-        return False, "⚠️ Please upload and process a PDF first."
+    st.success("PDF processed successfully! You can now ask questions.")
 
-    try:
-        docs = st.session_state.retriever.invoke(query)
 
-        if not docs:
-            return False, "⚠️ No relevant content found."
-
-        context = "\n\n".join([d.page_content for d in docs])
-
-        prompt = f"Use ONLY this context:\n{context}\n\nQuestion: {query}\nAnswer:"
-
-        result = chat_model.invoke(prompt)
-        return True, result.content
-
-    except Exception as e:
-        return False, f"❌ Error generating answer: {type(e).__name__}: {str(e)}"
-
-# UI
-uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
-
-if st.button("Process PDF"):
-    success, msg = process_pdf(uploaded_pdf)
-    st.success(msg) if success else st.error(msg)
-
-st.divider()
-
-question = st.text_input("Ask a question:")
+# ------------------------ Ask a Question ------------------------
+query = st.text_input("Ask a question based on your PDF:")
 
 if st.button("Get Answer"):
-    if not question.strip():
+    if not vector_db:
+        st.error("Please upload a PDF first.")
+    elif not query:
         st.warning("Please enter a question.")
     else:
-        with st.spinner("Generating answer..."):
-            success, answer = rag_answer(question)
+        st.info("Searching...")
 
-        if success:
-            st.text_area("Answer:", answer, height=300)
-        else:
-            st.error(answer)
+        retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.get_relevant_documents(query)
+
+        context = "\n\n".join(doc.page_content for doc in docs)
+
+        prompt = f"""
+Use ONLY the following context to answer the question.
+
+Context:
+{context}
+
+Question: {query}
+
+Answer:
+"""
+
+        answer = llm.invoke(prompt)
+
+        st.success("Answer:")
+        st.write(answer)
